@@ -144,12 +144,14 @@ async function fetchAllTasksWithComments(): Promise<TaskWithComments[]> {
     return url;
   });
 
-  // Query 2: Overdue tasks (deadline < today, not completed)
+  // Query 2: Overdue tasks (deadline < today, excluding Supposedly Completed, Completed, Deferred)
   const overdueTasksPromise = fetchTasksWithPagination((start) => {
     const url = new URL(`${BITRIX_WEBHOOK_URL}/tasks.task.list`);
     url.searchParams.set("filter[RESPONSIBLE_ID]", BITRIX_USER_ID);
     url.searchParams.set("filter[<DEADLINE]", today);
-    url.searchParams.set("filter[!STATUS]", "5");
+    url.searchParams.append("filter[!STATUS][]", "4");
+    url.searchParams.append("filter[!STATUS][]", "5");
+    url.searchParams.append("filter[!STATUS][]", "6");
     url.searchParams.set("start", start.toString());
     return url;
   });
