@@ -134,14 +134,12 @@ async function fetchTaskComments(taskId: string): Promise<FormattedComment[]> {
 async function fetchAllTasksWithComments(): Promise<TaskWithComments[]> {
   const today = getTodayISOString();
 
-  // Query 1: Active tasks by status (Pending, In Progress, Supposedly Completed, Deferred)
+  // Query 1: Active tasks by status (Pending, In Progress)
   const activeTasksPromise = fetchTasksWithPagination((start) => {
     const url = new URL(`${BITRIX_WEBHOOK_URL}/tasks.task.list`);
     url.searchParams.set("filter[RESPONSIBLE_ID]", BITRIX_USER_ID);
     url.searchParams.append("filter[STATUS][]", "2");
     url.searchParams.append("filter[STATUS][]", "3");
-    url.searchParams.append("filter[STATUS][]", "4");
-    url.searchParams.append("filter[STATUS][]", "6");
     url.searchParams.set("start", start.toString());
     return url;
   });
@@ -208,7 +206,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "get_my_tasks",
         description:
-          "Fetches all active and overdue tasks from Bitrix24 where the user is the assigned person, including all comments for each task. Returns tasks with statuses: Pending, In Progress, Supposedly Completed, Deferred, plus any overdue tasks (deadline passed, not completed).",
+          "Fetches all active and overdue tasks from Bitrix24 where the user is the assigned person, including all comments for each task. Returns tasks with statuses: Pending, In Progress, plus any overdue tasks (deadline passed, not completed).",
         inputSchema: {
           type: "object",
           properties: {},
