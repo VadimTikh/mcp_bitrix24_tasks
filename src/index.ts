@@ -65,6 +65,52 @@ const STATUS_NAMES: Record<string, string> = {
   "6": "Deferred",
 };
 
+interface RawTask {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  deadline: string | null;
+  groupId: string;
+  createdBy: string;
+  commentsCount: string;
+}
+
+function getTodayISOString(): string {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today.toISOString().split(".")[0];
+}
+
+async function fetchTasksWithPagination(
+  buildUrl: (start: number) => URL
+): Promise<RawTask[]> {
+  const tasks: RawTask[] = [];
+  let start = 0;
+
+  while (true) {
+    const url = buildUrl(start);
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
+    }
+
+    const data = (await response.json()) as TasksApiResponse;
+
+    if (data.result && data.result.tasks) {
+      tasks.push(...data.result.tasks);
+    }
+
+    if (data.next) {
+      start = data.next;
+    } else {
+      break;
+    }
+  }
+
+  return tasks;
+}
+
 async function fetchTaskComments(taskId: string): Promise<FormattedComment[]> {
   const url = `${BITRIX_WEBHOOK_URL}/task.commentitem.getlist?TASKID=${taskId}`;
 
@@ -86,10 +132,10 @@ async function fetchTaskComments(taskId: string): Promise<FormattedComment[]> {
 }
 
 async function fetchAllTasksWithComments(): Promise<TaskWithComments[]> {
-  const allTasks: TaskWithComments[] = [];
-  let start = 0;
+  const today = getTodayISOString();
 
-  while (true) {
+  // Query 1: Active tasks by status (Pending, In Progress, Supposedly Completed, Deferred)
+  const activeTasksPromise = fetchTasksWithPagination((start) => {
     const url = new URL(`${BITRIX_WEBHOOK_URL}/tasks.task.list`);
     url.searchParams.set("filter[RESPONSIBLE_ID]", BITRIX_USER_ID);
     url.searchParams.append("filter[STATUS][]", "2");
@@ -97,36 +143,48 @@ async function fetchAllTasksWithComments(): Promise<TaskWithComments[]> {
     url.searchParams.append("filter[STATUS][]", "4");
     url.searchParams.append("filter[STATUS][]", "6");
     url.searchParams.set("start", start.toString());
+    return url;
+  });
 
-    const response = await fetch(url.toString());
-    if (!response.ok) {
-      throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
+  // Query 2: Overdue tasks (deadline < today, not completed)
+  const overdueTasksPromise = fetchTasksWithPagination((start) => {
+    const url = new URL(`${BITRIX_WEBHOOK_URL}/tasks.task.list`);
+    url.searchParams.set("filter[RESPONSIBLE_ID]", BITRIX_USER_ID);
+    url.searchParams.set("filter[<DEADLINE]", today);
+    url.searchParams.set("filter[!STATUS]", "5");
+    url.searchParams.set("start", start.toString());
+    return url;
+  });
+
+  // Fetch both in parallel
+  const [activeTasks, overdueTasks] = await Promise.all([
+    activeTasksPromise,
+    overdueTasksPromise,
+  ]);
+
+  // Combine and deduplicate by task ID
+  const taskMap = new Map<string, RawTask>();
+  for (const task of [...activeTasks, ...overdueTasks]) {
+    if (!taskMap.has(task.id)) {
+      taskMap.set(task.id, task);
     }
+  }
 
-    const data = (await response.json()) as TasksApiResponse;
+  // Fetch comments and format tasks
+  const allTasks: TaskWithComments[] = [];
+  for (const task of taskMap.values()) {
+    const comments = await fetchTaskComments(task.id);
 
-    if (data.result && data.result.tasks) {
-      for (const task of data.result.tasks) {
-        const comments = await fetchTaskComments(task.id);
-
-        allTasks.push({
-          id: task.id,
-          title: task.title,
-          description: task.description || "",
-          status: STATUS_NAMES[task.status] || task.status,
-          deadline: task.deadline || "No deadline",
-          groupId: task.groupId,
-          createdBy: task.createdBy,
-          comments,
-        });
-      }
-    }
-
-    if (data.next) {
-      start = data.next;
-    } else {
-      break;
-    }
+    allTasks.push({
+      id: task.id,
+      title: task.title,
+      description: task.description || "",
+      status: STATUS_NAMES[task.status] || task.status,
+      deadline: task.deadline || "No deadline",
+      groupId: task.groupId,
+      createdBy: task.createdBy,
+      comments,
+    });
   }
 
   return allTasks;
@@ -150,7 +208,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "get_my_tasks",
         description:
-          "Fetches all active tasks from Bitrix24 where the user is the assigned person, including all comments for each task. Returns tasks with statuses: Pending, In Progress, Supposedly Completed, and Deferred.",
+          "Fetches all active and overdue tasks from Bitrix24 where the user is the assigned person, including all comments for each task. Returns tasks with statuses: Pending, In Progress, Supposedly Completed, Deferred, plus any overdue tasks (deadline passed, not completed).",
         inputSchema: {
           type: "object",
           properties: {},
